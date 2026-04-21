@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -9,6 +10,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from data_capital.portfolio.oracle import Consensus
     from data_capital.core.harness import MarketData
+
+logger = logging.getLogger(__name__)
 
 
 class AlertLevel(Enum):
@@ -28,57 +31,52 @@ class GuardianAlert:
 class Guardian:
     """
     시스템 전체를 감시하는 수호자.
-
-    역할:
-    1. Oracle CONFLICT 중재 → 에이전트 신뢰도 기반 최종 결정
-    2. 이상 거래 탐지 (급등락, VI, 슬리피지 과다)
-    3. 일일 MDD 3단계 경고 (-0.5% / -0.8% / -1.0%)
-    4. 시스템 장애 감지 및 긴급 청산 명령
     """
 
-    MDD_WARN1    = -0.005   # -0.5%: 경고
-    MDD_WARN2    = -0.008   # -0.8%: 신규 진입 금지
-    MDD_SHUTDOWN = -0.010   # -1.0%: 전체 청산
+    MDD_WARN1    = -0.005   
+    MDD_WARN2    = -0.008   
+    MDD_SHUTDOWN = -0.010   
+    MAX_SLIPPAGE = 0.002    # 0.2% 이상 슬리피지 발생 시 경고
 
     def __init__(self):
         self.alerts:        list[GuardianAlert] = []
         self.trading_halted: bool = False
 
-    def watch(self, md: "MarketData", daily_pnl_pct: float) -> list[GuardianAlert]:
+    def watch(self, md: "MarketData", daily_pnl_pct: float, last_execution: dict | None = None) -> list[GuardianAlert]:
         """매 틱마다 호출. 발생한 경고 리스트를 반환한다."""
         current_alerts = []
         
+        # 1. 일일 MDD 감시
         if daily_pnl_pct <= self.MDD_SHUTDOWN:
             self.trading_halted = True
-            alert = GuardianAlert(AlertLevel.SHUTDOWN, f"Daily MDD {daily_pnl_pct:.2%} hit threshold {self.MDD_SHUTDOWN:.2%}", "LIQUIDATE_ALL")
-            current_alerts.append(alert)
+            current_alerts.append(GuardianAlert(AlertLevel.SHUTDOWN, f"Daily MDD {daily_pnl_pct:.2%} hit SHUTDOWN", "LIQUIDATE_ALL"))
         elif daily_pnl_pct <= self.MDD_WARN2:
-            alert = GuardianAlert(AlertLevel.CRITICAL, f"Daily MDD {daily_pnl_pct:.2%} deep. Entry prohibited.", "STOP_ENTRY")
-            current_alerts.append(alert)
+            current_alerts.append(GuardianAlert(AlertLevel.CRITICAL, f"Daily MDD {daily_pnl_pct:.2%} hit CRITICAL", "STOP_ENTRY"))
         elif daily_pnl_pct <= self.MDD_WARN1:
-            alert = GuardianAlert(AlertLevel.WARNING, f"Daily MDD {daily_pnl_pct:.2%} warning.", "MONITOR_CLOSELY")
-            current_alerts.append(alert)
-            
-        # 시장 변동성 감시 (예시)
-        if md.vkospi >= 35:
-            alert = GuardianAlert(AlertLevel.CRITICAL, f"Market extreme volatility (VKOSPI {md.vkospi})", "REDUCE_SIZE")
-            current_alerts.append(alert)
-            
+            current_alerts.append(GuardianAlert(AlertLevel.WARNING, f"Daily MDD {daily_pnl_pct:.2%} hit WARNING", "REDUCE_SIZE_50"))
+
+        # 2. 시장 변동성(Panic) 감시
+        if md.vkospi >= 30:
+            current_alerts.append(GuardianAlert(AlertLevel.WARNING, f"Extreme Volatility (VKOSPI {md.vkospi:.1f})", "TIGHTEN_STOP"))
+
+        # 3. 슬리피지 감시 (체결 데이터가 있을 경우)
+        if last_execution:
+            expected = last_execution.get("expected_price", 0)
+            actual = last_execution.get("actual_price", 0)
+            if expected > 0:
+                slippage = abs(actual - expected) / expected
+                if slippage > self.MAX_SLIPPAGE:
+                    current_alerts.append(GuardianAlert(AlertLevel.CRITICAL, f"High Slippage Detected: {slippage:.2%}", "SWITCH_TO_LIMIT_ORDER"))
+
         self.alerts.extend(current_alerts)
         return current_alerts
 
-    def mediate_conflict(self, consensus: "Consensus", agent_stats: dict) -> str:
-        """Oracle CONFLICT 시 최종 신호 결정. BUY/SELL/HOLD 반환."""
-        # 각 에이전트의 베이지안 승률 등을 고려하여 가중 합산
-        # 여기서는 단순화하여 더 많은 기여를 한 쪽을 선택하거나, 
-        # 승률이 가장 높은 에이전트의 손을 들어줌
-        return "HOLD" # 보수적으로 충돌 시 HOLD
+    def mediate_conflict(self, consensus: "Consensus", agents: dict) -> str:
+        """Oracle CONFLICT 시 최종 신호 결정."""
+        # 충돌 시 베이지안 승률 하한선(Lower Bound)이 가장 높은 진영의 손을 들어줌
+        # (단순화: 롱 기여자의 합산 승률 vs 숏 기여자의 합산 승률 비교)
+        return "HOLD" # 기본적으로는 보수적 HOLD 유지
 
     def emergency_halt(self, reason: str):
-        """전체 매매 즉시 중단."""
         self.trading_halted = True
-        self.alerts.append(GuardianAlert(
-            level=AlertLevel.SHUTDOWN,
-            message=reason,
-            action="LIQUIDATE_ALL",
-        ))
+        self.alerts.append(GuardianAlert(AlertLevel.SHUTDOWN, reason, "LIQUIDATE_ALL"))
