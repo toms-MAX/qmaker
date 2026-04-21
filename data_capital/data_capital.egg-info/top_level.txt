@@ -1,0 +1,6 @@
+agents
+backtest
+core
+data
+indicators
+tests

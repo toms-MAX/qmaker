@@ -1,0 +1,5 @@
+pykrx>=1.0.45
+pandas>=2.0
+numpy>=1.26
+scipy>=1.12
+pytest>=8.0
