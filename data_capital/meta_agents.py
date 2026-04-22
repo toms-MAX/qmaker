@@ -289,11 +289,10 @@ class Oracle:
     """
     7개 에이전트의 의견을 종합해서
     1개의 메타 결론을 도출하는 합의 시스템.
+    활성 에이전트 수에 따라 임계값을 동적으로 조정.
     """
 
-    # 합의 기준
-    UNANIMITY_THRESHOLD = 6   # 7명 중 6명+ → 강한 신호
-    MAJORITY_THRESHOLD  = 4   # 7명 중 4~5명 → 보통 신호
+    TOTAL_AGENTS = 7          # 목표 에이전트 수 (확장 시 조정)
 
     def __init__(self):
         self.consensus_history: list = []
@@ -325,21 +324,26 @@ class Oracle:
             signals: {agent_id: SignalResult}
             failure_db_warning: 실패 DB에서 온 경고 (있으면 반영)
         """
-        active = {k: v for k, v in signals.items() if v.signal != "NO_SIGNAL"}
+        # 전체 신호 수 기준으로 임계값 계산 (HOLD/NO_SIGNAL도 "반대" 표로 취급)
+        n_total = max(len(signals), self.TOTAL_AGENTS)   # 최소 TOTAL_AGENTS 기준 유지
+        active = {k: v for k, v in signals.items() if v.signal not in ("NO_SIGNAL", "HOLD")}
 
-        buy_agents  = [k for k, v in active.items() if v.signal == "BUY"]
-        sell_agents = [k for k, v in active.items() if "SELL" in v.signal]
-        hold_agents = [k for k, v in active.items() if v.signal == "HOLD"]
+        buy_agents  = [k for k, v in signals.items() if v.signal == "BUY"]
+        sell_agents = [k for k, v in signals.items() if "SELL" in v.signal]
+        hold_agents = [k for k, v in signals.items() if v.signal in ("HOLD", "NO_SIGNAL")]
 
-        n_buy  = len(buy_agents)
-        n_sell = len(sell_agents)
-        n_total = len(active)
+        n_buy   = len(buy_agents)
+        n_sell  = len(sell_agents)
+
+        # n_total 기준 동적 임계값 — 7명 중 몇 명이 BUY를 외쳤는가
+        unanimity_threshold = max(1, round(n_total * 0.43))   # 3/7=43%+ → 만장일치(현재 3명)
+        majority_threshold  = max(1, round(n_total * 0.28))   # 2/7=28%+ → 과반(현재 2명)
 
         cross_val = self._cross_validate(active)
 
         # ── 소수 의견 추적 ──
         minority_opinion = None
-        if n_buy >= self.MAJORITY_THRESHOLD and n_sell >= 1:
+        if n_buy >= majority_threshold and n_sell >= 1:  # type: ignore[operator]
             minority_opinion = {
                 "agents": sell_agents,
                 "reasons": [active[a].reason for a in sell_agents],
@@ -359,8 +363,8 @@ class Oracle:
                 reasoning=f"실패 DB 경고: {failure_db_warning}",
             )
 
-        # ── 만장일치 ──
-        if n_buy >= self.UNANIMITY_THRESHOLD:
+        # ── 만장일치: 전체 에이전트 43%+ BUY (현재 3명 기준: 3명) ──
+        if n_buy >= unanimity_threshold:
             conf_bonus = 0.20 if cross_val["independent_confirmation"] else 0.0
             confidence = min(0.95, 0.75 + conf_bonus)
             return ConsensusResult(
@@ -372,15 +376,15 @@ class Oracle:
                 sell_agents=sell_agents,
                 minority_opinion=minority_opinion,
                 reasoning=(
-                    f"만장일치 BUY ({n_buy}/7) | "
+                    f"활성 에이전트 BUY {n_buy}/{n_total} | "
                     f"독립 확증: {cross_val['independent_confirmation']} | "
                     f"신뢰도 {confidence:.0%}"
                 ),
             )
 
-        # ── 과반 합의 ──
-        if n_buy >= self.MAJORITY_THRESHOLD:
-            confidence = 0.55 + (n_buy - self.MAJORITY_THRESHOLD) * 0.05
+        # ── 과반: 28%+ BUY (현재 기준: 2명) ──
+        if n_buy >= majority_threshold:
+            confidence = 0.55 + (n_buy - majority_threshold) * 0.05
             return ConsensusResult(
                 decision="BUY",
                 confidence=confidence,
@@ -389,20 +393,20 @@ class Oracle:
                 hold_agents=hold_agents,
                 sell_agents=sell_agents,
                 minority_opinion=minority_opinion,
-                reasoning=f"과반 BUY ({n_buy}/7) | 신뢰도 {confidence:.0%}",
+                reasoning=f"과반 BUY {n_buy}/{n_total} | 신뢰도 {confidence:.0%}",
             )
 
-        # ── 분열 ──
-        if n_buy > 0 and abs(n_buy - n_sell) <= 1:
+        # ── 소수 단독 신호 ──
+        if n_buy == 1 and n_sell == 0:
             return ConsensusResult(
                 decision="SPLIT",
-                confidence=0.40,
-                capital_ratio=0.10,
+                confidence=0.35,
+                capital_ratio=0.08,
                 buy_agents=buy_agents,
                 hold_agents=hold_agents,
                 sell_agents=sell_agents,
-                minority_opinion=minority_opinion,
-                reasoning=f"의견 분열 BUY:{n_buy} SELL:{n_sell} — 소규모 진입 or 패스",
+                minority_opinion=None,
+                reasoning=f"단독 신호 [{buy_agents[0]}] — 소규모 진입 (40% 사이즈)",
             )
 
         # ── 관망 ──

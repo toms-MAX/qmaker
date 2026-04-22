@@ -456,6 +456,22 @@ class SignalResult:
         }
 
 
+def NO_SIGNAL(agent_id: str, reason: str) -> SignalResult:
+    return SignalResult(
+        agent_id=agent_id,
+        signal="NO_SIGNAL",
+        confidence=0.0,
+        market_fit=0.0,
+        expected_return=0.0,
+        max_loss=0.0,
+        capital_request=0.0,
+        entry_price=0.0,
+        target_price=0.0,
+        stop_price=0.0,
+        reason=reason,
+    )
+
+
 class LiveAgentHarness(ABC):
     """
     실시간 7개 에이전트의 기반 클래스.
@@ -504,6 +520,14 @@ class LiveAgentHarness(ABC):
         kelly_full = (confidence * win_loss_ratio - q) / win_loss_ratio
         kelly_safe = kelly_full * self.kelly_fraction
         return self.allocated_capital * max(0.0, min(kelly_safe, 0.35))
+
+    def calc_target_price(self, entry_price: float, profit_pct: Optional[float] = None) -> float:
+        pct = profit_pct if profit_pct is not None else self.take_profit_pct
+        return entry_price * (1 + pct)
+
+    def calc_stop_price(self, entry_price: float, loss_pct: Optional[float] = None) -> float:
+        pct = loss_pct if loss_pct is not None else self.stop_loss_pct
+        return entry_price * (1 - pct)
 
     @property
     def win_rate(self) -> float:
