@@ -1,10 +1,12 @@
 """AgentHarness 및 공통 모듈 단위 테스트."""
 
+from datetime import datetime
+
 import pandas as pd
 import numpy as np
 import pytest
 
-from data_capital.core.harness import AgentConfig, AgentHarness, Signal
+from data_capital.core.harness import AgentConfig, AgentHarness, MarketData, Signal
 from data_capital.core.splitter import split_data, DataSplit
 from data_capital.indicators.common import rsi, atr, overnight_gap
 
@@ -117,3 +119,33 @@ class TestIndicators:
         r5  = rsi(self.df["close"], 5).dropna()
         # 짧은 기간 RSI가 더 많이 변동해야 함
         assert r5.std() >= r14.std()
+
+
+# ---------------------------------------------------------------------------
+# MarketData (frozen invariant)
+# ---------------------------------------------------------------------------
+
+class TestMarketDataFrozen:
+    def _make_md(self) -> MarketData:
+        return MarketData(
+            ticker="069500", current_time=datetime(2024, 1, 2, 9, 10),
+            open=30_000, high=30_500, low=29_800, close=30_200,
+            volume=1_000_000, prev_close=30_000,
+        )
+
+    def test_computed_fields_populated(self):
+        md = self._make_md()
+        assert md.gap_pct == pytest.approx(0.0)
+        assert md.vol_ratio == pytest.approx(1.0)  # vol_ma5=0 → 1.0 fallback
+        assert md.market_state is not None
+
+    def test_mutation_blocked(self):
+        """MarketData는 frozen이므로 생성 후 필드 수정 불가."""
+        md = self._make_md()
+        with pytest.raises(Exception):
+            md.close = 999  # type: ignore
+
+    def test_mutation_blocked_on_computed_field(self):
+        md = self._make_md()
+        with pytest.raises(Exception):
+            md.gap_pct = 0.99  # type: ignore

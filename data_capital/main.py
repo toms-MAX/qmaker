@@ -140,29 +140,33 @@ class DataCapital:
         self.peak_capital:      float = float(self.TOTAL_CAPITAL)
         self.last_api_latency:  float = 0.0   # ms
 
-    def execute_order(self, agent_id: str, ticker: str, side: str, price: float, amount: float):
+    def execute_order(self, agent_id: str, ticker: str, signal, amount: float):
+        """BUY 주문 실행. TP/SL은 에이전트의 Signal에서 가져온다 (하드코딩 금지)."""
         kst_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=9)
-        side_kor = "매수" if side == "BUY" else "매도"
-        
-        print(f"\n>>> [ORDER] {kst_now.strftime('%H:%M:%S')} | {agent_id} | {side_kor} | {price:,.0f}원 | {amount:,.0f}원치")
-        
-        if side == "BUY":
-            shares = int(amount / price)
-            if shares > 0:
-                self.open_positions[agent_id] = {
-                    "agent_id": agent_id,
-                    "ticker": ticker,
-                    "entry_price": price,
-                    "entry_time": kst_now,
-                    "shares": shares,
-                    "position_obj": Position(
-                        agent_id=agent_id, ticker=ticker, entry_price=price,
-                        entry_time=kst_now, shares=shares,
-                        target_price=price * 1.01,
-                        stop_price=price * 0.995
-                    )
-                }
-                self.firebase.save_trade({"side": "BUY", "agent": agent_id, "price": price, "shares": shares})
+        price = signal.entry_price
+
+        print(
+            f"\n>>> [ORDER] {kst_now.strftime('%H:%M:%S')} | {agent_id} | 매수 | "
+            f"{price:,.0f}원 | {amount:,.0f}원치 | "
+            f"TP:{signal.target_price:,.0f} SL:{signal.stop_price:,.0f}"
+        )
+
+        shares = int(amount / price)
+        if shares > 0:
+            self.open_positions[agent_id] = {
+                "agent_id":    agent_id,
+                "ticker":      ticker,
+                "entry_price": price,
+                "entry_time":  kst_now,
+                "shares":      shares,
+                "position_obj": Position(
+                    agent_id=agent_id, ticker=ticker, entry_price=price,
+                    entry_time=kst_now, shares=shares,
+                    target_price=signal.target_price,
+                    stop_price=signal.stop_price,
+                ),
+            }
+            self.firebase.save_trade({"side": "BUY", "agent": agent_id, "price": price, "shares": shares})
 
     def run_iteration(self, market_data_list: list):
         if not market_data_list:
@@ -241,7 +245,7 @@ class DataCapital:
             for aid, amt in allocations.items():
                 adj_amt = amt * split_factor
                 if adj_amt > 100_000:
-                    self.execute_order(aid, md.ticker, "BUY", md.close, adj_amt)
+                    self.execute_order(aid, md.ticker, buy_signals[aid], adj_amt)
 
 # ════════════════════════════════════════════
 #  완전 자동화 실행부

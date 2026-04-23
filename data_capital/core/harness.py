@@ -78,8 +78,13 @@ def classify_market(
 # ─────────────────────────────────────────────
 #  시장 데이터 컨테이너
 # ─────────────────────────────────────────────
-@dataclass
+@dataclass(frozen=True)
 class MarketData:
+    """Immutable market snapshot. Once constructed, fields cannot be mutated.
+
+    Enforces the 'each agent reads the same data' invariant — prevents one
+    agent from accidentally polluting another's view.
+    """
     ticker:         str
     current_time:   datetime
     open:           float
@@ -109,20 +114,23 @@ class MarketData:
     vi_status:      str   = "NORMAL"   # NORMAL / ACTIVE / RELEASED
     vi_elapsed_sec: int   = 9999
 
-    # 계산값
+    # 계산값 (frozen이라 object.__setattr__로 주입)
     gap_pct:        float = field(init=False)
     vol_ratio:      float = field(init=False)
     market_state:   MarketState = field(init=False)
 
     def __post_init__(self):
-        self.gap_pct   = (self.open - self.prev_close) / self.prev_close if self.prev_close else 0
-        self.vol_ratio = self.volume / self.vol_ma5 if self.vol_ma5 else 1.0
-        self.market_state = classify_market(
-            self.kospi_change, self.vkospi, self.vol_ratio,
+        gap_pct   = (self.open - self.prev_close) / self.prev_close if self.prev_close else 0
+        vol_ratio = self.volume / self.vol_ma5 if self.vol_ma5 else 1.0
+        market_state = classify_market(
+            self.kospi_change, self.vkospi, vol_ratio,
             (self.close - self.ma20) / self.ma20 if self.ma20 else 0,
             (self.bb_upper - self.bb_lower) / self.bb_middle if self.bb_middle else 0,
             self.foreign_net,
         )
+        object.__setattr__(self, "gap_pct",      gap_pct)
+        object.__setattr__(self, "vol_ratio",    vol_ratio)
+        object.__setattr__(self, "market_state", market_state)
 
 
 # ─────────────────────────────────────────────
