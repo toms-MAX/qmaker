@@ -11,10 +11,10 @@ from data_capital.core.harness import AgentConfig, AgentHarness, Signal
 
 @dataclass
 class VolatilityParams:
-    panic_threshold: float = -0.020  # -2% 이하 급락 시
+    panic_threshold: float = -0.025  # -2.5% 이하 — 더 강한 패닉만 포착 (최적값)
     stop_pct:        float = 0.010
-    take_pct:        float = 0.020
-    size:            float = 0.05
+    take_pct:        float = 0.025   # 목표가 2.5% (최적값)
+    size:            float = 0.10    # 에이전트당 10% — walk-forward 최적값
 
 
 class VolatilityAgent(AgentHarness):

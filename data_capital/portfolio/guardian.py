@@ -72,10 +72,34 @@ class Guardian:
         return current_alerts
 
     def mediate_conflict(self, consensus: "Consensus", agents: dict) -> str:
-        """Oracle CONFLICT 시 최종 신호 결정."""
-        # 충돌 시 베이지안 승률 하한선(Lower Bound)이 가장 높은 진영의 손을 들어줌
-        # (단순화: 롱 기여자의 합산 승률 vs 숏 기여자의 합산 승률 비교)
-        return "HOLD" # 기본적으로는 보수적 HOLD 유지
+        """
+        Oracle CONFLICT 시 최종 신호 결정.
+        BUY 진영과 SELL 진영의 베이지안 승률 합산을 비교하여
+        우세한 진영의 신호를 채택한다. 팽팽하면 보수적 HOLD.
+        """
+        buy_score  = 0.0
+        sell_score = 0.0
+
+        for aid in consensus.buy_agents:
+            agent = agents.get(aid)
+            if agent is not None:
+                buy_score += getattr(agent, "bayesian_win_rate", 0.5)
+
+        for aid in consensus.sell_agents:
+            agent = agents.get(aid)
+            if agent is not None:
+                sell_score += getattr(agent, "bayesian_win_rate", 0.5)
+
+        MARGIN = 0.15  # 15% 이상 차이가 있어야 진영 채택
+        if buy_score > sell_score + MARGIN:
+            logger.info("Guardian 중재: BUY 채택 (buy=%.2f sell=%.2f)", buy_score, sell_score)
+            return "BUY"
+        if sell_score > buy_score + MARGIN:
+            logger.info("Guardian 중재: SELL 채택 (buy=%.2f sell=%.2f)", buy_score, sell_score)
+            return "SELL"
+
+        logger.info("Guardian 중재: HOLD 유지 (buy=%.2f sell=%.2f — 팽팽)", buy_score, sell_score)
+        return "HOLD"
 
     def emergency_halt(self, reason: str):
         self.trading_halted = True

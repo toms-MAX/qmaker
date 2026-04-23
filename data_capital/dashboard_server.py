@@ -1,7 +1,13 @@
 """
 DATA CAPITAL — 실시간 대시보드 서버
-http://localhost:8765 에서 확인
+http://localhost:9002 에서 확인
+
+보안:
+- 기본값으로 127.0.0.1(localhost)에만 바인딩 → LAN 노출 없음
+- DASHBOARD_TOKEN 환경변수 설정 시 ?token=<값> 쿼리스트링 인증 필요
 """
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -9,10 +15,14 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
-LOG_FILE = os.path.join(os.path.dirname(__file__), "trading.log")
-PORT     = 9002
-UTC      = timezone.utc
+LOG_FILE         = os.path.join(os.path.dirname(__file__), "trading.log")
+PORT             = 9002
+UTC              = timezone.utc
+DASHBOARD_TOKEN  = os.environ.get("DASHBOARD_TOKEN", "").strip()
+# HOST: 기본 localhost. LAN 공개가 필요하면 환경변수로 0.0.0.0 지정
+DASHBOARD_HOST   = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
 
 # ─── 로그 파싱 ────────────────────────────────────────────
 def parse_log():
@@ -326,10 +336,26 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # 서버 로그 조용히
 
+    def _check_auth(self, parsed_url) -> bool:
+        """DASHBOARD_TOKEN 설정 시 ?token= 쿼리스트링 검증."""
+        if not DASHBOARD_TOKEN:
+            return True
+        token = parse_qs(parsed_url.query).get("token", [""])[0]
+        # 타이밍 공격 방지를 위해 hmac.compare_digest 사용
+        return hmac.compare_digest(token, DASHBOARD_TOKEN)
+
     def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
+        parsed = urlparse(self.path)
+        path   = parsed.path
+
+        if not self._check_auth(parsed):
+            body = "401 Unauthorized — ?token=<DASHBOARD_TOKEN> 필요".encode()
+            self._send(401, "text/plain; charset=utf-8", body)
+            return
+
+        if path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", HTML.encode())
-        elif self.path == "/api/data":
+        elif path == "/api/data":
             trades, live_rows, summary, latest = parse_log()
             payload = json.dumps(
                 {"trades": trades, "live_rows": live_rows, "summary": summary, "latest": latest},
@@ -349,8 +375,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"[Dashboard] http://localhost:{PORT}  (Ctrl+C 로 종료)")
+    server = HTTPServer((DASHBOARD_HOST, PORT), Handler)
+    auth_note = f" (토큰 인증 활성화)" if DASHBOARD_TOKEN else " (인증 없음 — DASHBOARD_TOKEN 미설정)"
+    print(f"[Dashboard] http://{DASHBOARD_HOST}:{PORT}{auth_note}  (Ctrl+C 로 종료)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -8,3 +8,15 @@ htmlcov/
 .vscode/
 data/raw/
 data/processed/
+
+# 보안: 자격증명 및 비밀 파일
+serviceAccount.json
+.env
+.env.local
+.env.production
+*.pem
+*.key
+secrets/
+
+# 운영 로그
+*.log

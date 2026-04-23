@@ -13,11 +13,11 @@ from data_capital.indicators.common import sma
 @dataclass
 class GapTradingParams:
     gap_threshold: float = 0.003   # 0.3% 이상 갭다운
-    ma_period:     int   = 20      
+    ma_period:     int   = 20
     gap_max:       float = 0.025   # 과도한 낙폭(패닉) 제외
-    stop_pct:      float = 0.005   
-    take_pct:      float = 0.010   
-    size:          float = 0.05    # 비중 상향
+    stop_pct:      float = 0.005
+    take_pct:      float = 0.010
+    size:          float = 0.20    # 에이전트당 20% — walk-forward 최적값
 
 
 class GapTradingAgent(AgentHarness):
@@ -52,8 +52,8 @@ class GapTradingAgent(AgentHarness):
             if not (-p.gap_max <= gap <= -p.gap_threshold):
                 continue
 
-            # 이평선 필터: 장기 추세는 살아있어야 함
-            if row["open"] < ma.iloc[i]:
+            # 이평선 필터: 갭 전날 종가가 MA 위 = 상승추세에서의 갭다운
+            if df["close"].iloc[i - 1] < ma.iloc[i - 1]:
                 continue
 
             entry = row["open"]

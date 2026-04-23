@@ -6,17 +6,35 @@ DATA CAPITAL — main.py (Robust Automation Version)
 
 import time as time_module
 import json
+import logging
+import traceback
 from datetime import datetime, time, timedelta, timezone
 UTC = timezone.utc
 from typing import Optional
-import traceback
 import pandas as pd
 import sys
 import os
 
+# .env 파일 자동 로딩 (python-dotenv 없이 직접 파싱)
+def _load_dotenv(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+_load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 from core.harness    import MarketData, MarketState, BuyFilters, SellRules, Position
 from agents          import create_all_agents
-from meta_agents     import CIO, Guardian, Oracle, Coach
+from meta_agents     import CIO, Guardian, Oracle
 from failure_db_backtest import FailureLearningDB
 
 # ════════════════════════════════════════════
@@ -40,6 +58,13 @@ class Logger:
 LOG_FILE = "trading.log"
 sys.stdout = Logger(LOG_FILE)
 
+# 표준 logging을 파일+콘솔 양쪽에 연결
+logging.basicConfig(
+    level=logging.WARNING,
+    format="[%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr,
+)
+
 # ════════════════════════════════════════════
 #  Firebase 연동 (생략 가능, 오프라인 모드 지원)
 # ════════════════════════════════════════════
@@ -52,25 +77,33 @@ class FirebaseSync:
         try:
             import firebase_admin
             from firebase_admin import credentials, firestore
-            if os.path.exists(path):
-                if not firebase_admin._apps:
+            if not firebase_admin._apps:
+                cred_json = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+                if cred_json:
+                    cred = credentials.Certificate(json.loads(cred_json))
+                elif os.path.exists(path):
                     cred = credentials.Certificate(path)
-                    firebase_admin.initialize_app(cred)
-                self.db = firestore.client()
-                print("[Firebase] 연결 성공")
-            else:
-                print("[Firebase] 설정 파일 없음 - 오프라인 모드")
+                else:
+                    print("[Firebase] 자격증명 없음 — 오프라인 모드")
+                    return
+                firebase_admin.initialize_app(cred)
+            self.db = firestore.client()
+            print("[Firebase] 연결 성공")
         except Exception as e:
             print(f"[Firebase] 연결 실패: {e}")
 
     def _safe_write(self, collection: str, doc_id: Optional[str], data: dict):
-        if self.db is None: return
+        if self.db is None:
+            return
         try:
             from firebase_admin import firestore
             data["synced_at"] = firestore.SERVER_TIMESTAMP
-            if doc_id: self.db.collection(collection).document(doc_id).set(data)
-            else: self.db.collection(collection).add(data)
-        except: pass
+            if doc_id:
+                self.db.collection(collection).document(doc_id).set(data)
+            else:
+                self.db.collection(collection).add(data)
+        except Exception as e:
+            print(f"[Firebase] 쓰기 실패 ({collection}): {e}")
 
     def save_trade(self, trade: dict): self._safe_write("trades", None, trade)
     def update_portfolio(self, portfolio: dict): self._safe_write("portfolio", "live", portfolio)
@@ -99,9 +132,13 @@ class DataCapital:
         self.failure_db = FailureLearningDB()
         self.firebase   = FirebaseSync(service_account_path)
 
-        self.open_positions:  dict  = {}
-        self.daily_pnl_pct:   float = 0.0
-        self.is_halted:       bool  = False
+        self.open_positions:    dict  = {}
+        self.daily_pnl_pct:     float = 0.0
+        self.is_halted:         bool  = False
+        # 누적 자본 추적 (Guardian MDD 계산용)
+        self.current_capital:   float = float(self.TOTAL_CAPITAL)
+        self.peak_capital:      float = float(self.TOTAL_CAPITAL)
+        self.last_api_latency:  float = 0.0   # ms
 
     def execute_order(self, agent_id: str, ticker: str, side: str, price: float, amount: float):
         kst_now = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=9)
@@ -128,47 +165,83 @@ class DataCapital:
                 self.firebase.save_trade({"side": "BUY", "agent": agent_id, "price": price, "shares": shares})
 
     def run_iteration(self, market_data_list: list):
-        if not market_data_list: return
+        if not market_data_list:
+            return
         md = market_data_list[0]
         kst_now = md.current_time
 
+        # ── 포지션 청산 체크 ────────────────────────────
         for agent_id, pos in list(self.open_positions.items()):
             res = SellRules.check(pos["position_obj"], md.close, kst_now)
             if res:
                 trade_pnl_pct = (md.close - pos["entry_price"]) / pos["entry_price"]
                 trade_amt     = pos["position_obj"].shares * pos["entry_price"]
-                # 포트폴리오 기준 손익 반영 (개별 거래 수익률 × 거래 비중)
                 portfolio_pnl = trade_pnl_pct * (trade_amt / self.TOTAL_CAPITAL)
-                self.daily_pnl_pct += portfolio_pnl
+                self.daily_pnl_pct  += portfolio_pnl
+                self.current_capital += trade_amt * trade_pnl_pct
+                self.peak_capital    = max(self.peak_capital, self.current_capital)
                 pnl_won = trade_pnl_pct * trade_amt
                 print(f"\n<<< [EXIT] {agent_id} | {res} | {trade_pnl_pct:+.2%} | {pnl_won:+,.0f}원 | 일일PnL: {self.daily_pnl_pct:+.3%}")
                 del self.open_positions[agent_id]
-                self.firebase.save_trade({"side": "SELL", "agent": agent_id, "price": md.close,
-                                          "pnl": trade_pnl_pct, "portfolio_pnl": portfolio_pnl})
+                self.firebase.save_trade({
+                    "side": "SELL", "agent": agent_id, "price": md.close,
+                    "pnl": trade_pnl_pct, "portfolio_pnl": portfolio_pnl,
+                })
 
-        if time(9, 5) <= kst_now.time() <= time(15, 0) and not self.is_halted:
-            # 모든 에이전트 신호 수집 (포지션 없는 에이전트만)
-            all_signals = {}
-            buy_signals  = {}
-            for aid, agent in self.agents.items():
-                if aid not in self.open_positions:
-                    sig = agent.generate_signal(md, daily_pnl_pct=self.daily_pnl_pct)
-                    all_signals[aid] = sig          # Oracle: 전체 신호 (HOLD 포함)
-                    if sig.signal == "BUY":
-                        buy_signals[aid] = sig      # CIO: BUY만
+        # ── Guardian 시스템 감시 ────────────────────────
+        mdd_pct = (self.current_capital - self.peak_capital) / self.peak_capital if self.peak_capital > 0 else 0.0
+        data_ok = (md.close > 0 and md.volume > 0)
+        health  = self.guardian.health_check(
+            daily_pnl_pct   = self.daily_pnl_pct,
+            mdd_pct         = mdd_pct,
+            api_latency_ms  = self.last_api_latency,
+            data_quality_ok = data_ok,
+            vkospi          = md.vkospi,
+            avg_correlation = 0.3,
+        )
+        if health["halt"] and not self.is_halted:
+            self.is_halted = True
+            for alert in health["alerts"]:
+                print(f"\n[GUARDIAN] {alert}")
+            print("[GUARDIAN] 거래 중단 선언 — 청산 대기")
+        elif health["alerts"]:
+            for alert in health["alerts"]:
+                print(f"\n[GUARDIAN] {alert}")
 
-            if buy_signals:
-                consensus = self.oracle.form_consensus(all_signals)  # 전체 신호로 합의
-                print(f"  [Oracle] {consensus.decision} | {consensus.reasoning[:70]}")
-                if consensus.decision in ("BUY", "SPLIT"):
-                    split_factor = 0.4 if consensus.decision == "SPLIT" else 1.0
-                    allocations, vetos = self.cio.allocate(self.agents, buy_signals)
-                    if vetos:
-                        print(f"  [VETO] {vetos}")
-                    for aid, amt in allocations.items():
-                        adj_amt = amt * split_factor
-                        if adj_amt > 100_000:
-                            self.execute_order(aid, md.ticker, "BUY", md.close, adj_amt)
+        if self.is_halted or not (time(9, 5) <= kst_now.time() <= time(15, 0)):
+            return
+
+        # ── 에이전트 신호 수집 ────────────────────────
+        all_signals: dict = {}
+        buy_signals:  dict = {}
+        for aid, agent in self.agents.items():
+            if aid not in self.open_positions:
+                sig = agent.generate_signal(md, daily_pnl_pct=self.daily_pnl_pct)
+                all_signals[aid] = sig
+                if sig.signal == "BUY":
+                    buy_signals[aid] = sig
+
+        # ── Guardian 충돌 감지 ────────────────────────
+        if all_signals:
+            conflicts = self.guardian.check_conflict(all_signals)
+            for c in conflicts:
+                print(f"  [CONFLICT] BUY:{c['buy']} vs SELL:{c['sell']} → {c['resolution']}")
+
+        if not buy_signals:
+            return
+
+        # ── Oracle 합의 → CIO 배분 → 주문 ───────────
+        consensus = self.oracle.form_consensus(all_signals)
+        print(f"  [Oracle] {consensus.decision} | {consensus.reasoning[:70]}")
+        if consensus.decision in ("BUY", "SPLIT"):
+            split_factor = 0.4 if consensus.decision == "SPLIT" else 1.0
+            allocations, vetos = self.cio.allocate(self.agents, buy_signals)
+            if vetos:
+                print(f"  [VETO] {vetos}")
+            for aid, amt in allocations.items():
+                adj_amt = amt * split_factor
+                if adj_amt > 100_000:
+                    self.execute_order(aid, md.ticker, "BUY", md.close, adj_amt)
 
 # ════════════════════════════════════════════
 #  완전 자동화 실행부
@@ -196,11 +269,14 @@ def fetch_and_calculate(ticker="069500"):
         # KOSPI 등락률 실시간 조회 (실패 시 기본값 사용)
         kospi_change = 0.0
         try:
-            kdf = stock.get_index_ohlcv(start, today, "1001")  # KOSPI
+            # pykrx 내부 출력 억제
+            import contextlib
+            with contextlib.redirect_stderr(None), contextlib.redirect_stdout(None):
+                kdf = stock.get_index_ohlcv(start, today, "1001")  # KOSPI
             if not kdf.empty and len(kdf) >= 2:
                 kospi_change = float(kdf['등락률'].iloc[-1])
         except Exception:
-            pass
+            kospi_change = 0.0  # 실패 시 0.0 유지
 
         md = MarketData(
             ticker=ticker, current_time=kst_now,
@@ -214,7 +290,7 @@ def fetch_and_calculate(ticker="069500"):
         )
         return [md]
     except Exception as e:
-        print(f"[fetch] 오류: {e}")
+        print(f"\n[fetch] 데이터 수집 오류 ({kst_now.strftime('%H:%M:%S')}): {e}")
         return None
 
 def calculate_rsi(series, period=14):
@@ -235,17 +311,21 @@ if __name__ == "__main__":
             now_time = kst_now.time()
 
             if time(9, 0) <= now_time <= time(15, 40):
+                t0 = time_module.monotonic()
                 data = fetch_and_calculate()
+                system.last_api_latency = (time_module.monotonic() - t0) * 1000  # ms
                 if data:
                     system.run_iteration(data)
-                    print(f"  [LIVE] {kst_now.strftime('%H:%M:%S')} | 종가:{data[0].close:,.0f} | RSI:{data[0].rsi14:.1f} | 감시 중...", flush=True)
+                    print(f"  [LIVE] {kst_now.strftime('%H:%M:%S')} | 종가:{data[0].close:,.0f} | RSI:{data[0].rsi14:.1f} | 지연:{system.last_api_latency:.0f}ms", flush=True)
                 else:
                     print(f"  [WAIT] {kst_now.strftime('%H:%M:%S')} | 데이터 수집 대기 중...", flush=True)
             
             elif now_time > time(15, 40):
-                print(f"\n[{kst_now.strftime('%H:%M:%S')}] 금일 장 종료. 수면 모드 진입.", flush=True)
-                system.daily_pnl_pct = 0.0 
-                time_module.sleep(3600 * 5) 
+                cum_pct = (system.current_capital - system.TOTAL_CAPITAL) / system.TOTAL_CAPITAL
+                print(f"\n[{kst_now.strftime('%H:%M:%S')}] 금일 장 종료. 일일PnL:{system.daily_pnl_pct:+.3%} | 누적PnL:{cum_pct:+.3%}", flush=True)
+                system.daily_pnl_pct = 0.0
+                system.is_halted     = False  # 다음날 재개
+                time_module.sleep(3600 * 5)
 
             else:
                 print(f"  [SLEEP] {kst_now.strftime('%H:%M:%S')} | 개장 대기 중...             ", end='\r', flush=True)
@@ -257,4 +337,5 @@ if __name__ == "__main__":
             sys.exit()
         except Exception as e:
             print(f"\n[ERROR] 시스템 오류 발생: {e}")
+            traceback.print_exc()
             time_module.sleep(60)

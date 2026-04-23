@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from datetime import datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class FirebaseSync:
     """
     Python 매매 엔진 ↔ Firestore 실시간 동기화.
     오프라인 모드에서는 조용히 무시한다.
+
+    자격증명 우선순위:
+    1. 환경변수 FIREBASE_CREDENTIALS (JSON 문자열)
+    2. service_account_path 파일 경로 (기본: serviceAccount.json)
     """
 
     def __init__(self, service_account_path: str = "serviceAccount.json"):
@@ -21,11 +30,20 @@ class FirebaseSync:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred = credentials.Certificate(path)
+                cred_json = os.environ.get("FIREBASE_CREDENTIALS", "").strip()
+                if cred_json:
+                    cred = credentials.Certificate(json.loads(cred_json))
+                    logger.info("Firebase: 환경변수로 초기화")
+                elif os.path.exists(path):
+                    cred = credentials.Certificate(path)
+                    logger.info("Firebase: 파일로 초기화 (%s)", path)
+                else:
+                    logger.info("Firebase: 자격증명 없음 — 오프라인 모드")
+                    return
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
-        except Exception:
-            pass   # 오프라인 모드
+        except Exception as e:
+            logger.warning("Firebase 초기화 실패 (오프라인 모드): %s", e)
 
     @property
     def online(self) -> bool:

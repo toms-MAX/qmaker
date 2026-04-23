@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Optional
 import numpy as np
 
-from core.harness import AgentHarness, MarketData, MarketState, SignalResult
+from core.harness import LiveAgentHarness, MarketData, MarketState, SignalResult
 
 
 # ─────────────────────────────────────────────
@@ -39,7 +39,7 @@ class CIO:
         self.agent_positions    = {}   # agent_id → 현재 포지션 금액
         self.correlation_matrix = {}   # 에이전트 간 상관관계
 
-    def score_agent(self, agent: AgentHarness, signal: SignalResult) -> float:
+    def score_agent(self, agent: LiveAgentHarness, signal: SignalResult) -> float:
         """에이전트 점수 계산"""
         # EV 정규화 (0~1)
         ev_norm = min(1.0, max(0.0, signal.ev / 0.005))
@@ -77,7 +77,7 @@ class CIO:
 
     def check_veto(
         self,
-        agent: AgentHarness,
+        agent: LiveAgentHarness,
         signal: SignalResult,
         same_direction_exposure: float,
         avg_correlation: float,
@@ -113,7 +113,7 @@ class CIO:
         agents: dict,
         signals: dict,
         avg_correlation: float = 0.3,
-    ) -> dict:
+    ) -> tuple[dict, dict]:
         """
         에이전트별 자금 배분 결정.
         반환: {agent_id: allocated_capital}
@@ -421,6 +421,8 @@ class Oracle:
             reasoning="충분한 합의 미형성 — 관망",
         )
 
+    _MINORITY_MAX = 200  # 딕셔너리 최대 크기 (메모리 누수 방지)
+
     def track_minority_accuracy(self, past_consensus: ConsensusResult, actual_result: str):
         """소수 의견이 맞았는지 사후 추적"""
         if not past_consensus.minority_opinion:
@@ -428,6 +430,10 @@ class Oracle:
         if actual_result != past_consensus.decision:
             for agent_id in past_consensus.minority_opinion.get("agents", []):
                 self.minority_accuracy[agent_id] = self.minority_accuracy.get(agent_id, 0) + 1
+        # 크기 초과 시 가장 낮은 점수 항목 제거
+        if len(self.minority_accuracy) > self._MINORITY_MAX:
+            oldest = min(self.minority_accuracy, key=self.minority_accuracy.get)
+            del self.minority_accuracy[oldest]
 
 
 # ─────────────────────────────────────────────

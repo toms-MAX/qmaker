@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from data_capital.core.harness import TRANSACTION_COST, Signal
+try:
+    from data_capital.core.harness import CostModel, KOSPI_STOCK, TRANSACTION_COST, Signal
+except ModuleNotFoundError:
+    from core.harness import CostModel, KOSPI_STOCK, TRANSACTION_COST, Signal
 
 
 @dataclass
@@ -33,24 +37,41 @@ class BacktestResult:
 def run_backtest(
     df: pd.DataFrame,
     signals: list[Signal],
-    cost_rate: float = TRANSACTION_COST,
+    cost_model: Optional[CostModel] = None,
     initial_capital: float = 100_000_000,  # 1억원
+    cost_rate: Optional[float] = None,     # DEPRECATED: use cost_model
 ) -> BacktestResult:
     """
     시그널 리스트를 시뮬레이션하여 성과를 계산한다.
 
     포지션: 시그널 당일 시가 진입, 익절/손절 or 다음날 시가 청산.
-    비용:   편도 cost_rate (기본 0.08%)
+    비용:   cost_model의 매수/매도 비대칭 비용 적용. 기본값 KOSPI_STOCK (왕복 약 0.66%).
 
     Args:
         df:              OHLCV 데이터프레임
         signals:         AgentHarness.run() 결과
-        cost_rate:       편도 거래 비용
+        cost_model:      CostModel 인스턴스. None이면 KOSPI_STOCK 사용.
         initial_capital: 초기 자본금
+        cost_rate:       DEPRECATED. 구버전 호환용 편도 대칭 비용률.
 
     Returns:
         BacktestResult
     """
+    # 비용 모델 해석 (하위 호환 포함)
+    if cost_model is None:
+        if cost_rate is not None:
+            # 구버전 경로: 대칭 편도 비용 (세금 0)
+            cost_model = CostModel(
+                commission=cost_rate,
+                transfer_tax=0.0,
+                education_tax=0.0,
+                slippage=0.0,
+            )
+        else:
+            cost_model = KOSPI_STOCK
+    buy_cost  = cost_model.buy_rate
+    sell_cost = cost_model.sell_rate
+
     if not signals:
         empty = pd.Series(dtype=float)
         return BacktestResult(
@@ -88,7 +109,7 @@ def run_backtest(
             fallback_px = check_row["open"]
             exit_date   = df.index[i + 1]
 
-        entry = sig.entry_price * (1 + cost_rate * sig.direction)
+        entry = sig.entry_price * (1 + buy_cost * sig.direction)
 
         if exit_mode == "pure_next_open":
             pass  # exit_price already set
@@ -113,7 +134,7 @@ def run_backtest(
                 exit_price = fallback_px
                 exit_reason = exit_mode
 
-        exit_net = exit_price * (1 - cost_rate * sig.direction)
+        exit_net = exit_price * (1 - sell_cost * sig.direction)
         pnl_pct  = (exit_net - entry) / entry * sig.direction
         pnl_abs  = capital * sig.size * pnl_pct
         capital += pnl_abs

@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Optional
 import pandas as pd
 import numpy as np
+from scipy.stats import beta as _beta_dist
 
 
 # ─────────────────────────────────────────────
@@ -351,10 +352,47 @@ class SellRules:
 
 
 # ─────────────────────────────────────────────
+#  거래 비용 모델 (한국 주식 2025년 기준)
+# ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CostModel:
+    """매수·매도 비대칭을 반영한 거래 비용 모델.
+
+    - 증권거래세(0.15%)·농특세(0.15%)는 **매도 1회**에만 발생한다.
+    - 슬리피지는 보수적으로 편도 0.15% (왕복 0.30%)로 잡는다.
+    - 왕복 총 비용 ≈ 0.66% (KOSPI 개별주 기본값).
+    """
+    commission:    float = 0.00015   # 증권사 수수료 (편도)
+    transfer_tax:  float = 0.0015    # 증권거래세 (매도 1회)
+    education_tax: float = 0.0015    # 농특세 (매도 1회, KOSPI만)
+    slippage:      float = 0.0015    # 슬리피지 (편도, 보수적)
+
+    @property
+    def buy_rate(self) -> float:
+        return self.commission + self.slippage
+
+    @property
+    def sell_rate(self) -> float:
+        return self.commission + self.transfer_tax + self.education_tax + self.slippage
+
+    @property
+    def round_trip(self) -> float:
+        return self.buy_rate + self.sell_rate
+
+
+# 프리셋
+KOSPI_STOCK  = CostModel()                                                    # KOSPI 200 개별주 (왕복 ≈ 0.66%)
+KOSDAQ_STOCK = CostModel(education_tax=0.0)                                   # KOSDAQ 개별주 (농특세 면제, 왕복 ≈ 0.51%)
+KOSPI_ETF    = CostModel(transfer_tax=0.0, education_tax=0.0, slippage=0.0003) # ETF (왕복 ≈ 0.09%)
+
+
+# ─────────────────────────────────────────────
 #  백테스트 공통 Signal / AgentConfig / AgentHarness
 # ─────────────────────────────────────────────
 
-TRANSACTION_COST = 0.0008  # 편도 0.08%
+TRANSACTION_COST = 0.0008  # DEPRECATED: 신규 코드는 CostModel 사용
 
 
 @dataclass
@@ -477,6 +515,8 @@ class LiveAgentHarness(ABC):
     실시간 7개 에이전트의 기반 클래스.
     """
 
+    COST_MODEL: CostModel = KOSPI_STOCK   # 서브클래스에서 ETF 전용 등으로 오버라이드 가능
+
     def __init__(
         self,
         agent_id: str,
@@ -521,6 +561,22 @@ class LiveAgentHarness(ABC):
         kelly_safe = kelly_full * self.kelly_fraction
         return self.allocated_capital * max(0.0, min(kelly_safe, 0.35))
 
+    def calc_net_ev(self, win_prob: float, expected_return: float, max_loss: float) -> float:
+        """비용 차감 후 기대값.
+
+        왕복 거래 비용을 양쪽에서 제거한 진짜 기대값을 계산한다.
+        양수여야 진입할 가치가 있다.
+
+        Args:
+            win_prob:        승률 (0.0 ~ 1.0)
+            expected_return: 예상 수익률 (양수, 예 0.015 = +1.5%)
+            max_loss:        최대 손실률 (양수로 전달, 예 0.005 = -0.5%)
+        """
+        rt = self.COST_MODEL.round_trip
+        net_win  = expected_return - rt
+        net_loss = abs(max_loss) + rt
+        return win_prob * net_win - (1 - win_prob) * net_loss
+
     def calc_target_price(self, entry_price: float, profit_pct: Optional[float] = None) -> float:
         pct = profit_pct if profit_pct is not None else self.take_profit_pct
         return entry_price * (1 + pct)
@@ -536,7 +592,6 @@ class LiveAgentHarness(ABC):
 
     @property
     def bayesian_win_rate(self) -> float:
-        from scipy.stats import beta as beta_dist
         alpha = self.win_count + 1
         beta  = self.loss_count + 1
-        return float(beta_dist.ppf(0.05, alpha, beta))
+        return float(_beta_dist.ppf(0.05, alpha, beta))

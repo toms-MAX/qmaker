@@ -12,12 +12,12 @@ from data_capital.indicators.common import sma
 
 @dataclass
 class EODParams:
-    return_threshold: float = 0.012   # 기준 상향 (1.0% -> 1.2%)
-    vol_ratio_min:    float = 1.3     # 거래량 기준 상향 (1.2 -> 1.3)
+    return_threshold: float = 0.008   # 0.8%로 완화 — 거래 빈도 증가 (최적값)
+    vol_ratio_min:    float = 1.0     # 거래량 기준 완화 (최적값)
     ma_period:        int   = 20
-    stop_pct:         float = 0.005
-    take_pct:         float = 0.010
-    size:             float = 0.05
+    stop_pct:         float = 0.003   # 손절 좁힘 (최적값)
+    take_pct:         float = 0.015   # 목표가 1.5% (최적값)
+    size:             float = 0.20    # 에이전트당 20% (최적값)
 
 
 class EODAgent(AgentHarness):
