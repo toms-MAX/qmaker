@@ -6,8 +6,8 @@ __pycache__/
 htmlcov/
 .idx/
 .vscode/
-data/raw/
-data/processed/
+data_capital/data/raw/
+data_capital/data/processed/
 
 # 보안: 자격증명 및 비밀 파일
 serviceAccount.json
