@@ -36,6 +36,7 @@ from core.harness    import MarketData, MarketState, BuyFilters, SellRules, Posi
 from agents          import create_all_agents
 from meta_agents     import CIO, Guardian, Oracle
 from failure_db_backtest import FailureLearningDB
+from safety          import StateManager, deserialize_datetime, validate_timestamp
 
 # ════════════════════════════════════════════
 #  로깅 시스템 (Console + File 동시 출력)
@@ -54,16 +55,18 @@ class Logger:
         self.terminal.flush()
         self.log.flush()
 
-# 로그 파일 위치 설정 및 리다이렉션 (stderr는 터미널만 — 경고 로그 오염 방지)
+# 로그 파일 위치 설정 (리다이렉트는 __main__ 진입 시에만 수행)
 LOG_FILE = "trading.log"
-sys.stdout = Logger(LOG_FILE)
 
-# 표준 logging을 파일+콘솔 양쪽에 연결
-logging.basicConfig(
-    level=logging.WARNING,
-    format="[%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,
-)
+
+def _setup_cli_logging(log_file: str = LOG_FILE) -> None:
+    """__main__ 진입 시에만 호출. 테스트/임포트 시 부작용 없음."""
+    sys.stdout = Logger(log_file)
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="[%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
 
 # ════════════════════════════════════════════
 #  Firebase 연동 (생략 가능, 오프라인 모드 지원)
@@ -115,8 +118,10 @@ class FirebaseSync:
 #  DATA CAPITAL 메인 엔진 (완전 자동화 버전)
 # ════════════════════════════════════════════
 class DataCapital:
-    TOTAL_CAPITAL  = 3_000_000   
-    DAILY_MDD_HALT = -0.01       
+    TOTAL_CAPITAL  = 3_000_000
+    DAILY_MDD_HALT = -0.01
+    STATE_FILE     = "state.json"
+    DATA_MAX_AGE_S = 600   # 장중 데이터 stale 한도
 
     def __init__(self, service_account_path: str = "serviceAccount.json"):
         print("\n" + "═"*55)
@@ -131,6 +136,7 @@ class DataCapital:
         self.oracle     = Oracle()
         self.failure_db = FailureLearningDB()
         self.firebase   = FirebaseSync(service_account_path)
+        self.state_mgr  = StateManager(self.STATE_FILE)
 
         self.open_positions:    dict  = {}
         self.daily_pnl_pct:     float = 0.0
@@ -139,6 +145,71 @@ class DataCapital:
         self.current_capital:   float = float(self.TOTAL_CAPITAL)
         self.peak_capital:      float = float(self.TOTAL_CAPITAL)
         self.last_api_latency:  float = 0.0   # ms
+
+        self._restore_state()
+
+    def _restore_state(self) -> None:
+        """이전 세션 상태 복원. 없으면 초기값 유지."""
+        snapshot = self.state_mgr.load()
+        if not snapshot:
+            print("[STATE] 저장된 상태 없음 — 새 세션 시작")
+            return
+        self.current_capital = float(snapshot.get("current_capital", self.TOTAL_CAPITAL))
+        self.peak_capital    = float(snapshot.get("peak_capital",    self.TOTAL_CAPITAL))
+        self.daily_pnl_pct   = float(snapshot.get("daily_pnl_pct", 0.0))
+        # open_positions 복원 (datetime 마커 복원)
+        raw_positions = snapshot.get("open_positions", {}) or {}
+        restored: dict = {}
+        for aid, p in raw_positions.items():
+            p = deserialize_datetime(p)
+            entry_time = p.get("entry_time")
+            if not isinstance(entry_time, datetime):
+                entry_time = datetime.now()
+            restored[aid] = {
+                "agent_id":    aid,
+                "ticker":      p.get("ticker", ""),
+                "entry_price": float(p.get("entry_price", 0.0)),
+                "entry_time":  entry_time,
+                "shares":      int(p.get("shares", 0)),
+                "position_obj": Position(
+                    agent_id=aid,
+                    ticker=p.get("ticker", ""),
+                    entry_price=float(p.get("entry_price", 0.0)),
+                    entry_time=entry_time,
+                    shares=int(p.get("shares", 0)),
+                    target_price=float(p.get("target_price", 0.0)),
+                    stop_price=float(p.get("stop_price", 0.0)),
+                ),
+            }
+        self.open_positions = restored
+        print(
+            f"[STATE] 복원: capital={self.current_capital:,.0f} "
+            f"peak={self.peak_capital:,.0f} "
+            f"positions={len(self.open_positions)}"
+        )
+
+    def _persist_state(self) -> None:
+        """현재 세션 상태를 state.json에 원자적 저장."""
+        serializable_positions = {
+            aid: {
+                "ticker":       p["ticker"],
+                "entry_price":  p["entry_price"],
+                "entry_time":   p["entry_time"],
+                "shares":       p["shares"],
+                "target_price": p["position_obj"].target_price,
+                "stop_price":   p["position_obj"].stop_price,
+            }
+            for aid, p in self.open_positions.items()
+        }
+        try:
+            self.state_mgr.save({
+                "current_capital": self.current_capital,
+                "peak_capital":    self.peak_capital,
+                "daily_pnl_pct":   self.daily_pnl_pct,
+                "open_positions":  serializable_positions,
+            })
+        except Exception as e:  # noqa: BLE001
+            print(f"[STATE] 저장 실패: {e}")
 
     def execute_order(self, agent_id: str, ticker: str, signal, amount: float):
         """BUY 주문 실행. TP/SL은 에이전트의 Signal에서 가져온다 (하드코딩 금지)."""
@@ -173,6 +244,16 @@ class DataCapital:
             return
         md = market_data_list[0]
         kst_now = md.current_time
+
+        # Stale 데이터 방지 — 타임스탬프가 오래되면 매매 스킵
+        ok, reason = validate_timestamp(
+            md.current_time,
+            now=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=9),
+            max_age_seconds=self.DATA_MAX_AGE_S,
+        )
+        if not ok:
+            print(f"[STALE] 데이터 무효: {reason} — iteration 스킵")
+            return
 
         # ── 포지션 청산 체크 ────────────────────────────
         for agent_id, pos in list(self.open_positions.items()):
@@ -246,6 +327,9 @@ class DataCapital:
                 adj_amt = amt * split_factor
                 if adj_amt > 100_000:
                     self.execute_order(aid, md.ticker, buy_signals[aid], adj_amt)
+
+        # 포지션/자본 변화 발생한 iteration 끝에서 상태 저장
+        self._persist_state()
 
 # ════════════════════════════════════════════
 #  완전 자동화 실행부
@@ -329,6 +413,7 @@ if __name__ == "__main__":
                 print(f"\n[{kst_now.strftime('%H:%M:%S')}] 금일 장 종료. 일일PnL:{system.daily_pnl_pct:+.3%} | 누적PnL:{cum_pct:+.3%}", flush=True)
                 system.daily_pnl_pct = 0.0
                 system.is_halted     = False  # 다음날 재개
+                system._persist_state()        # 일 종료 시 확정 저장
                 time_module.sleep(3600 * 5)
 
             else:

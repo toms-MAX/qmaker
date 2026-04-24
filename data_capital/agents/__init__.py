@@ -341,7 +341,14 @@ class LevDecayAgent(LiveAgentHarness):
 # ─────────────────────────────────────────────
 #  팩토리 함수
 # ─────────────────────────────────────────────
+
+# v1.5 Walk-Forward 재검증 + mean_rev 튜닝 결과 채택된 4개 에이전트.
+# gap_trading / momentum / lev_decay 는 ETF 유니버스에서 엣지 없음 — 라이브 제외.
+ADOPTED_AGENTS = ("mean_rev", "volatility", "eod", "pairs")
+
+
 def create_all_agents(total_capital: float) -> dict:
+    """7개 전체 에이전트 — 레거시/백테스트용."""
     base = total_capital / 7
     return {
         "gap_trading": GapTradingAgent(base),
@@ -351,4 +358,15 @@ def create_all_agents(total_capital: float) -> dict:
         "eod":         EODAgent(base),
         "volatility":  VolatilityAgent(base),
         "lev_decay":   LevDecayAgent(base),
+    }
+
+
+def create_adopted_agents(total_capital: float) -> dict:
+    """v1.5 채택 4개 에이전트만 — 라이브/페이퍼 트레이딩용."""
+    base = total_capital / len(ADOPTED_AGENTS)
+    return {
+        "mean_rev":   MeanRevAgent(base),
+        "volatility": VolatilityAgent(base),
+        "eod":        EODAgent(base),
+        "pairs":      PairsAgent(base),
     }

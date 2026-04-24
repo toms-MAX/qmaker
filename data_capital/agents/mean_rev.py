@@ -12,13 +12,20 @@ from data_capital.indicators.common import rsi, bollinger_bands, sma
 
 @dataclass
 class MeanRevParams:
+    """ETF 유니버스 + screener top-3 + 비용 0.09% 환경에서 튜닝된 기본값.
+
+    Step 6 그리드 탐색 결과 (3/3 창 통과):
+      rsi_entry=40 — ETF는 RSI 30까지 잘 안 감. 40이 최적
+      bb_std=1.5  — 표준 2.0보다 한 단계 좁힘
+      stop_pct=0.003 (take_profit은 볼린저 중심선 회귀로 결정 — take_pct 보조)
+    """
     rsi_period:     int   = 14
-    rsi_entry:      float = 30.0   # RSI 이하일 때 매수
+    rsi_entry:      float = 40.0   # RSI 이하일 때 매수
     bb_period:      int   = 20
-    bb_std:         float = 2.0
+    bb_std:         float = 1.5
     vol_ratio_min:  float = 1.3    # 최소 거래량 배율
-    stop_pct:       float = 0.002
-    take_pct:       float = 0.004
+    stop_pct:       float = 0.003
+    take_pct:       float = 0.010
     size:           float = 0.02
 
 

@@ -1,0 +1,21 @@
+ticker,name,category
+069500,KODEX 200,index
+102110,TIGER 200,index
+226490,KODEX 코스피,index
+228790,TIGER 코스피,index
+122630,KODEX 레버리지,leverage
+252670,KODEX 200선물인버스2X,inverse
+114800,KODEX 인버스,inverse
+229200,KODEX 코스닥150,index
+233740,KODEX 코스닥150 레버리지,leverage
+251340,KODEX 코스닥150선물인버스,inverse
+091160,KODEX 반도체,sector
+091230,KODEX 미국달러선물,fx
+132030,KODEX 골드선물(H),commodity
+261220,KODEX WTI원유선물(H),commodity
+305720,KODEX 2차전지산업,sector
+305540,TIGER 2차전지테마,sector
+139660,TIGER 반도체,sector
+148020,KBSTAR 200,index
+292150,TIGER TOP10,thematic
+117680,KBSTAR 2차전지,sector

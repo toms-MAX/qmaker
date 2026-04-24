@@ -20,3 +20,7 @@ secrets/
 
 # 운영 로그
 *.log
+
+# 세션 상태 영속 파일 (재시작 복구용)
+state.json
+data_capital/state.json
