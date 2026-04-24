@@ -1,79 +1,98 @@
-"""KOSPI 200 유니버스 로더.
+"""KOSPI 200 유니버스 로더 (KRX 정적 스냅샷 기반).
 
-1순위: pykrx `get_index_portfolio_deposit_file("1028", date)` 실시간 조회.
-2순위: `data/kospi200_static.csv` 정적 폴백.
+KRX 정보데이터시스템에서 연초 3개 스냅샷을 수동 다운로드:
+    `kospi200_2022.csv`, `kospi200_2023.csv`, `kospi200_2024.csv`
 
-pykrx 집계 API는 KRX 환경변수(KRX_ID/KRX_PW) 요구로 실패할 수 있다.
-실패 시 로거 경고 후 정적 CSV로 폴백한다.
+해석:
+    - `load_universe(None)`  → 3 스냅샷 union (223종목). 데이터 수집 풀.
+    - `load_universe(date)`  → 해당 날짜 이전 가장 가까운 스냅샷 멤버십.
+      Screener 호출 시 point-in-time 편향을 피하기 위함.
+
+pykrx 실시간 조회는 2026년 현재 KRX 로그인 강제라 사용 불가.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-KOSPI200_INDEX = "1028"  # KRX 기준 KOSPI 200 인덱스 코드
-STATIC_CSV = Path(__file__).parent / "data" / "kospi200_static.csv"
-ETF_CSV    = Path(__file__).parent / "data" / "kospi_etf_static.csv"
+_PKG_DIR = Path(__file__).parent
+ETF_CSV    = _PKG_DIR / "data" / "kospi_etf_static.csv"
+UNION_CSV  = _PKG_DIR / "data" / "kospi200_union.csv"
+STATIC_CSV = _PKG_DIR / "data" / "kospi200_static.csv"  # 레거시 50종목 폴백
+
+# 스냅샷 기준일 → CSV. 기준일은 해당 연도 첫 영업일로 맞춤.
+SNAPSHOTS: Dict[pd.Timestamp, Path] = {
+    pd.Timestamp("2022-01-03"): _PKG_DIR / "kospi200_2022.csv",
+    pd.Timestamp("2023-01-02"): _PKG_DIR / "kospi200_2023.csv",
+    pd.Timestamp("2024-01-02"): _PKG_DIR / "kospi200_2024.csv",
+}
 
 
-def _load_static() -> List[str]:
-    df = pd.read_csv(STATIC_CSV, dtype={"ticker": str})
-    return df["ticker"].tolist()
+def _read_krx_snapshot(path: Path) -> List[str]:
+    df = pd.read_csv(path, dtype={"종목코드": str})
+    return df["종목코드"].str.zfill(6).tolist()
 
 
 def load_etf_universe() -> List[str]:
-    """KOSPI/KOSDAQ 주요 ETF 유니버스 (비용 0.09% 전제).
-
-    v1.5 피벗 이후 기본 유니버스. 개별주 대비 왕복 비용이
-    0.66% → 0.09%로 7배 낮아 알파 보존에 유리.
-    """
+    """KOSPI/KOSDAQ 주요 ETF 유니버스."""
     df = pd.read_csv(ETF_CSV, dtype={"ticker": str})
     return df["ticker"].tolist()
 
 
-def _load_pykrx(date_yyyymmdd: str) -> Optional[List[str]]:
-    """pykrx 시도. 빈 리스트나 예외는 None 반환."""
-    try:
-        from pykrx import stock
-    except ImportError:
-        return None
+def _load_union() -> List[str]:
+    """3 스냅샷 union — 캐시 파일 우선, 없으면 스냅샷에서 재빌드."""
+    if UNION_CSV.exists():
+        df = pd.read_csv(UNION_CSV, dtype={"ticker": str})
+        return df["ticker"].str.zfill(6).tolist()
 
-    try:
-        tickers = stock.get_index_portfolio_deposit_file(KOSPI200_INDEX, date_yyyymmdd)
-    except Exception as e:  # noqa: BLE001 — pykrx/KRX 레이어의 다양한 예외 포괄
-        logger.warning("pykrx KOSPI200 조회 실패 (%s): %s", date_yyyymmdd, e)
-        return None
+    tickers: set[str] = set()
+    for path in SNAPSHOTS.values():
+        if path.exists():
+            tickers |= set(_read_krx_snapshot(path))
+    if tickers:
+        return sorted(tickers)
 
-    if tickers is None or len(tickers) == 0:
-        return None
-
-    return [str(t).zfill(6) for t in tickers]
+    # 최후 폴백: 50종목 정적 CSV
+    logger.warning("KOSPI200 스냅샷 파일 없음 — %s 폴백", STATIC_CSV)
+    df = pd.read_csv(STATIC_CSV, dtype={"ticker": str})
+    return df["ticker"].tolist()
 
 
 def load_universe(date: pd.Timestamp | str | None = None) -> List[str]:
-    """KOSPI 200 유니버스 티커 리스트 반환.
-
+    """
     Args:
-        date: 스냅샷 기준일. None이면 정적 CSV만 사용.
+        date: None이면 전체 union (데이터 수집용).
+              값이 있으면 해당 날짜 이전 가장 가까운 스냅샷 멤버십 반환.
 
     Returns:
         6자리 티커 문자열 리스트.
     """
-    if date is not None:
-        ts = pd.Timestamp(date)
-        ymd = ts.strftime("%Y%m%d")
-        tickers = _load_pykrx(ymd)
-        if tickers:
-            logger.info("pykrx 유니버스 로드: %d 종목 (%s)", len(tickers), ymd)
-            return tickers
-        logger.warning("pykrx 유니버스 실패 — 정적 CSV 폴백")
+    if date is None:
+        tickers = _load_union()
+        logger.info("유니버스 union 로드: %d 종목", len(tickers))
+        return tickers
 
-    tickers = _load_static()
-    logger.info("정적 유니버스 로드: %d 종목", len(tickers))
+    ts = pd.Timestamp(date)
+    prior = sorted(d for d in SNAPSHOTS if d <= ts)
+    if prior:
+        snap_date = prior[-1]
+    else:
+        snap_date = min(SNAPSHOTS)
+        logger.warning("요청일 %s < 최초 스냅샷 %s — 최초 스냅샷 사용",
+                       ts.date(), snap_date.date())
+
+    path = SNAPSHOTS[snap_date]
+    if not path.exists():
+        logger.warning("스냅샷 파일 없음 %s — union 폴백", path)
+        return _load_union()
+
+    tickers = _read_krx_snapshot(path)
+    logger.info("유니버스 asof %s → 스냅샷 %s: %d 종목",
+                ts.date(), snap_date.date(), len(tickers))
     return tickers

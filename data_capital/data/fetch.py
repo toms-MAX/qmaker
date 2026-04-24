@@ -21,7 +21,8 @@ FETCH_START = "20200101"
 FETCH_END   = "20241231"
 
 # v1.5 멀티티커 기본 기간 (Train:2022 / Valid:2023 / Test:2024)
-UNIVERSE_FETCH_START = "20210601"   # 2022-01-02 첫 영업일의 MA200·100일 DD 계산용 여유분
+# 2021-01-01부터 12개월 여유 — MA200(200영업일≈10개월) + 100일 DD 안정 계산용
+UNIVERSE_FETCH_START = "20210101"
 UNIVERSE_FETCH_END   = "20241231"
 
 # pykrx 레이트리밋 대응: 종목 간 sleep

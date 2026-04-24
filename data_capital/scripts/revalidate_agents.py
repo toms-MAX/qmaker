@@ -47,7 +47,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--universe", choices=["stock", "etf"], default="etf",
-        help="stock=KOSPI 개별주 50종, etf=KOSPI/KOSDAQ ETF 20종 (기본)",
+        help="stock=KOSPI 200 스냅샷 union(223종), etf=KOSPI/KOSDAQ ETF 20종 (기본)",
     )
     parser.add_argument(
         "--mode", choices=["dispersion", "screened"], default="screened",
