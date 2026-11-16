@@ -1,0 +1,104 @@
+# 탐스 운영 규칙 — 원장의 판단 기준을 숫자로 적은 파일
+# 숫자만 바꾸면 다음 브리핑부터 바로 반영됩니다. 코드를 고칠 필요가 없습니다.
+# sla = 할 일이 생긴 뒤 며칠(운영일 기준) 안에 처리해야 하는지. 넘기면 원장 주간 리포트에 '지연'으로 뜹니다.
+
+[center]
+name = "탐스영어학원"
+greeting = "안녕하세요, 탐스영어입니다."
+manager = "관리자"
+owner = "원장"
+# 요일별 운영 여부 (월=0 … 일=6)
+open_days = [0, 1, 2, 3, 4]
+
+[attendance]
+# 사유 없는 결석 → 당일 학부모 문자
+unexcused_sla = 1
+# 연속 결석 n회 → 관리자가 전화
+call_after_consecutive = 2
+# 연속 결석 n회 → 원장에게 넘김
+escalate_after_consecutive = 3
+# 최근 window_days일 결석률이 이 값 이상이면 원장에게 넘김 (기록 min_records건 이상일 때만)
+window_days = 28
+escalate_absence_rate = 0.30
+min_records = 4
+# 결석 후 보강 예약 (도서관은 다른 회차로 예약)
+makeup_enabled = true
+makeup_window_days = 14
+
+[reading]
+# 레벨업: 현재 레벨 근처(현재레벨 - near_level 이상) 책을 min_books_at_level권 이상 읽었고,
+# 그중 최근 recent_books권 평균 정답률이 levelup_min_avg 이상이면 +levelup_step
+near_level = 0.2
+recent_books = 5
+min_books_at_level = 8
+levelup_min_avg = 85
+levelup_step = 0.3
+# 고전: 최근 struggle_books권 평균이 struggle_max_avg 미만 → 관리자가 레벨 -leveldown_step
+struggle_books = 3
+struggle_max_avg = 60
+leveldown_step = 0.3
+# 고전이 escalate_books권 이어지면 원장에게 넘김
+escalate_books = 6
+# 독서량: 최근 14일 퀴즈가 이 권수 미만이면 독려 (같은 기간 출석 2회 이상인 학생만)
+min_quizzes_14d = 3
+# SR 재진단 주기(일)
+sr_retest_days = 90
+# 칭찬 마일스톤 — 넘은 지 milestone_window_days일 안에 축하 연락
+milestone_books = [30, 50, 100, 150, 200, 300, 500]
+milestone_words = [100000, 300000, 500000, 1000000, 2000000]
+milestone_window_days = 7
+
+[payment]
+# 결제일 n일 전 청구서 발송 (결제선생)
+notice_days_before = 7
+# 납부기한 경과 n일 → 리마인드 문자 / 관리자 전화 / 원장에게 넘김
+remind_after = 3
+call_after = 7
+escalate_after = 14
+
+[consult]
+# 2개월 룰: 정기 상담 간격(일)
+interval_days = 60
+sla = 14
+# 정기 상담으로 인정하는 구분
+regular_kinds = ["정기상담", "전환상담", "해피콜"]
+# 신입 해피콜: 등록 후 n일째
+onboarding_days = [7, 30]
+
+[leads]
+# 문의 접수 후 회신 기한(일). 0 = 당일
+reply_sla = 0
+# 회신 후 진단 예약이 안 잡히면 n일 뒤 재연락
+nudge_after = 5
+# 진단 후 n일: 등록 확인 전화 / 마지막 연락 / 종료 처리
+followup_after = 3
+last_try_after = 7
+close_after = 14
+
+[transition]
+# 도서관 → 입시반 전환 상담 (초4 말, 2월 개강 전)
+grade = "초4"
+course = "도서관"
+months = [11, 12, 1, 2]
+sla = 21
+
+[churn]
+# 이탈 위험 점수(0~100)가 threshold 이상이면 원장이 직접 통화
+threshold = 50
+recheck_days = 14
+w_absence = 30
+w_score_drop = 20
+w_low_volume = 15
+w_no_consult = 15
+w_overdue = 20
+
+[closing]
+# 마감 체크리스트 (관리자가 퇴근 전 확인)
+checklist = [
+  "오늘 출결을 운영시트에 모두 입력했다",
+  "AR 퀴즈 기록을 독서기록 시트에 붙여 넣었다",
+  "오늘 한 전화·문자를 상담연락 시트에 한 줄씩 적었다",
+  "새 문의를 문의 시트에 적었다",
+  "컴퓨터 15대·헤드셋 전원을 껐다",
+  "교실 정리, 창문·에어컨·출입문을 확인했다",
+]

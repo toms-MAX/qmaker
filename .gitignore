@@ -24,3 +24,7 @@ secrets/
 # 세션 상태 영속 파일 (재시작 복구용)
 state.json
 data_capital/state.json
+
+# 탐스 운영 OS — 학생 개인정보와 생성물은 저장소에 올리지 않는다
+toms/data/
+toms/out/
